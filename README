@@ -1,7 +1,9 @@
 This is an experimental libfprint driver implementation for Goodix drivers.
 
+The actual changes are in the [55b4-experimental](https://github.com/TheWeirdDev/libfprint/tree/55b4-experimental) branch.
 Currently in the works:
-- 27c6x5110 (80x64 resolution)
+- 27c6:55b4 (supported and tested)
+- 27c6:55a4 (not supported. try at your own risk, it might work or brick your device)
 
 libfprint
 =========
