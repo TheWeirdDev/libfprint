@@ -35,6 +35,7 @@
 #define GOODIX_CMD_MCU_SWITCH_TO_FDT_MODE (0x36)
 #define GOODIX_CMD_NAV_0 (0x50)
 #define GOODIX_CMD_MCU_SWITCH_TO_SLEEP_MODE (0x60)
+#define GOODIX_CMD_MCU_SWITCH_TO_SLEEP_MODE_REALTEK (0x92)
 #define GOODIX_CMD_MCU_SWITCH_TO_IDLE_MODE (0x70)
 #define GOODIX_CMD_WRITE_SENSOR_REGISTER (0x80)
 #define GOODIX_CMD_READ_SENSOR_REGISTER (0x82)
@@ -98,6 +99,10 @@ typedef struct __attribute__((__packed__)) _GoodixMcuSwitchToIdleMode {
   guint8 sleep_time;
   guint8 : 8;
 } GoodixMcuSwitchToIdleMode;
+
+typedef struct __attribute__((__packed__)) _GoodixMcuSwitchToSleepModeRealtek {
+  guint8 value;
+} GoodixMcuSwitchToSleepModeRealtek;
 
 typedef struct __attribute__((__packed__)) _GoodixWriteSensorRegister
 {

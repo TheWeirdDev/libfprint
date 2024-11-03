@@ -364,7 +364,7 @@ goodix_receive_protocol (FpDevice *dev, guint8 *data, guint32 length)
     }
 
   if (priv->ack)
-    fp_warn ("Didn't got ACK for command: 0x%02x", priv->cmd);
+    fp_warn ("Didn't get ACK for command: 0x%02x", priv->cmd);
 
   goodix_receive_done (dev, payload, payload_len, NULL);
 }
@@ -878,6 +878,32 @@ goodix_send_mcu_switch_to_sleep_mode (FpDevice *dev, guint8 sleep_time,
 }
 
 void
+goodix_send_mcu_switch_to_sleep_mode_realtek (FpDevice *dev, guint8 value,
+                                     GoodixSuccessCallback callback,
+                                     gpointer user_data)
+{
+  GoodixMcuSwitchToSleepModeRealtek payload = {.value = value};
+  GoodixCallbackInfo *cb_info;
+
+  if (callback)
+    {
+      cb_info = malloc (sizeof (GoodixCallbackInfo));
+
+      cb_info->callback = G_CALLBACK (callback);
+      cb_info->user_data = user_data;
+
+      goodix_send_protocol (dev, GOODIX_CMD_MCU_SWITCH_TO_SLEEP_MODE_REALTEK,
+                            (guint8 *) &payload, sizeof (payload), NULL, TRUE,
+                            GOODIX_TIMEOUT, TRUE, goodix_receive_success, cb_info);
+      return;
+    }
+
+  goodix_send_protocol (dev, GOODIX_CMD_MCU_SWITCH_TO_SLEEP_MODE_REALTEK,
+                        (guint8 *) &payload, sizeof (payload), NULL, TRUE,
+                        GOODIX_TIMEOUT, TRUE, NULL, NULL);
+}
+
+void
 goodix_send_write_sensor_register (FpDevice *dev, guint16 address,
                                    guint16 value,
                                    GoodixNoneCallback callback,
@@ -1276,6 +1302,15 @@ goodix_reset_state (FpDevice *dev)
   priv->reply = FALSE;
   priv->callback = NULL;
   priv->user_data = NULL;
+}
+
+void
+goodix_cancel_receive(FpDevice *dev)
+{
+  FpiDeviceGoodixTls *self = FPI_DEVICE_GOODIXTLS (dev);
+  FpiDeviceGoodixTlsPrivate *priv =
+    fpi_device_goodixtls_get_instance_private (self);
+  g_cancellable_cancel (priv->transfer_cancel_tkn);
 }
 
 gboolean

@@ -70,6 +70,9 @@ G_DECLARE_FINAL_TYPE(FpiDeviceGoodixTls55X4, fpi_device_goodixtls55x4, FPI,
 
 G_DEFINE_TYPE(FpiDeviceGoodixTls55X4, fpi_device_goodixtls55x4,
               FPI_TYPE_DEVICE_GOODIXTLS);
+
+static void goodix55X4_reset_state(FpiDeviceGoodixTls55X4 *self) {}
+
 // ---- ACTIVE SECTION START ----
 
 enum activate_states {
@@ -187,6 +190,22 @@ static void check_idle(FpDevice *dev, gpointer user_data, GError *err) {
   if (err) {
     fpi_ssm_mark_failed(user_data, err);
     return;
+  }
+  fpi_ssm_next_state(user_data);
+}
+static void check_sleep_realtek(FpDevice *dev, gboolean success, gpointer user_data, GError *err) {
+
+  if (err) {
+    fpi_ssm_mark_failed(user_data, err);
+    return;
+  }
+  if (!success) {
+    fpi_ssm_mark_failed(user_data,
+                        g_error_new(FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                                    "failed to put into sleep mode (realtek)"));
+    return;
+  } else {
+    g_print("Device is now on sleep\n");
   }
   fpi_ssm_next_state(user_data);
 }
@@ -327,10 +346,19 @@ enum SCAN_STAGES {
   SCAN_STAGE_SWITCH_TO_FDT_MODE2,
   SCAN_STAGE_SWITCH_TO_FDT_UP_NO_REPLY,
   SCAN_STAGE_SWITCH_TO_FDT_UP,
-  SCAN_STAGE_SWITCH_TO_SLEEP_MODE,
+//  SCAN_STAGE_SWITCH_TO_SLEEP_MODE,
+//  SCAN_STAGE_SWITCH_TO_SLEEP_MODE_REALTEK,
   SCAN_STAGE_SWITCH_TO_FDT_DONE,
   SCAN_STAGE_NUM,
 };
+
+enum SLEEP_STAGES {
+  SLEEP_STAGE_SWITCH_TO_SLEEP_MODE,
+  SLEEP_STAGE_SWITCH_TO_SLEEP_MODE_REALTEK,
+  SLEEP_STAGE_DEACTIVATE,
+  SLEEP_STAGE_NUM,
+};
+
 
 static void check_none_cmd(FpDevice *dev, guint8 *data, guint16 len,
                            gpointer ssm, GError *err) {
@@ -684,15 +712,36 @@ static void scan_run_state(FpiSsm *ssm, FpDevice *dev) {
                                      sizeof(fdt_switch_state_up_55X4), NULL,
                                      check_none_cmd, ssm);
     break;
-  case SCAN_STAGE_SWITCH_TO_SLEEP_MODE:
-    g_print("SWITCH TO SLEEP MODE\n");
-    goodix_send_mcu_switch_to_sleep_mode(dev, 20, check_idle, ssm);
-
-    break;
   case SCAN_STAGE_SWITCH_TO_FDT_DONE:
     fpi_image_device_report_finger_status(img_dev, FALSE);
     break;
   }
+}
+
+static void sleep_run_state(FpiSsm *ssm, FpDevice *dev) {
+  FpImageDevice *img_dev = FP_IMAGE_DEVICE(dev);
+
+  switch (fpi_ssm_get_cur_state(ssm)) {
+  case SLEEP_STAGE_SWITCH_TO_SLEEP_MODE:
+    goodix_reset_state(dev);
+    g_print("SWITCH TO SLEEP MODE\n");
+    goodix_send_mcu_switch_to_sleep_mode(dev, 20, check_idle, ssm);
+
+    break;
+  case SLEEP_STAGE_SWITCH_TO_SLEEP_MODE_REALTEK:
+    g_print("SWITCH TO SLEEP MODE REALTEK\n");
+    goodix_send_mcu_switch_to_sleep_mode_realtek(dev, 0x6c, check_sleep_realtek, ssm);
+    break;
+  case SLEEP_STAGE_DEACTIVATE:
+    g_print("Deactivated\n");
+    goodix_reset_state(dev);
+    goodix_cancel_receive(dev);
+    GError *error = NULL;
+    goodix_shutdown_tls(dev, &error);
+    goodix55X4_reset_state(FPI_DEVICE_GOODIXTLS55X4(img_dev));
+    fpi_image_device_deactivate_complete(img_dev, error);
+    break;
+  }  
 }
 
 static void write_sensor_complete(FpDevice *dev, gpointer user_data,
@@ -713,9 +762,23 @@ static void scan_complete(FpiSsm *ssm, FpDevice *dev, GError *error) {
   fp_dbg("finished scan");
 }
 
+static void sleep_complete(FpiSsm *ssm, FpDevice *dev, GError *error) {
+  if (error) {
+    fp_err("failed to sleep: %s (code: %d)", error->message, error->code);
+    return;
+  }
+  g_print("finished sleep!");
+  fp_dbg("finished sleep");
+}
+
 static void scan_start(FpiDeviceGoodixTls55X4 *dev) {
   fpi_ssm_start(fpi_ssm_new(FP_DEVICE(dev), scan_run_state, SCAN_STAGE_NUM),
                 scan_complete);
+}
+
+static void sleep_start(FpDevice *dev, gpointer user_data) {
+  fpi_ssm_start(fpi_ssm_new(dev, sleep_run_state, SLEEP_STAGE_NUM),
+                sleep_complete);
 }
 
 // ---- SCAN SECTION END ----
@@ -758,20 +821,18 @@ static void dev_change_state(FpImageDevice *img_dev,
   FpiDeviceGoodixTls55X4 *self = FPI_DEVICE_GOODIXTLS55X4(img_dev);
   G_DEBUG_HERE();
 
-  if (state == FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON) {
-    scan_start(self);
+  switch (state) { 
+    case FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON: {
+      scan_start(self);
+      break;
+    }
   }
 }
 
-static void goodix55X4_reset_state(FpiDeviceGoodixTls55X4 *self) {}
 
 static void dev_deactivate(FpImageDevice *img_dev) {
   FpDevice *dev = FP_DEVICE(img_dev);
-  goodix_reset_state(dev);
-  GError *error = NULL;
-  goodix_shutdown_tls(dev, &error);
-  goodix55X4_reset_state(FPI_DEVICE_GOODIXTLS55X4(img_dev));
-  fpi_image_device_deactivate_complete(img_dev, error);
+  fpi_device_add_timeout(dev, 500, sleep_start, NULL, NULL);
 }
 
 // ---- DEV SECTION END ----

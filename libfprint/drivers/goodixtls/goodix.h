@@ -253,6 +253,10 @@ void goodix_send_mcu_switch_to_sleep_mode (FpDevice          *dev,
                                           GoodixNoneCallback callback,
                                           gpointer           user_data);
 
+void goodix_send_mcu_switch_to_sleep_mode_realtek (FpDevice          *dev,
+                                                guint8             value,
+                                                GoodixSuccessCallback callback,
+                                                gpointer           user_data);
 void goodix_send_write_sensor_register (FpDevice          *dev,
                                         guint16            address,
                                         guint16            value,
@@ -335,6 +339,7 @@ gboolean goodix_dev_deinit (FpDevice *dev,
                             GError  **error);
 
 void goodix_reset_state (FpDevice *dev);
+void goodix_cancel_receive(FpDevice *dev);
 
 // ---- DEV SECTION END ----
 
