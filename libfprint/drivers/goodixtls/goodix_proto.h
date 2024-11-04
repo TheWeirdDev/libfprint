@@ -134,7 +134,7 @@ typedef struct __attribute__((__packed__)) _GoodixReset
 {
   guint8 reset_sensor : 1;
   guint8 soft_reset_mcu : 1;
-  guint8 : 6;
+  guint8 other: 6;
   guint8 sleep_time;
 } GoodixReset;
 

@@ -735,7 +735,7 @@ static void sleep_run_state(FpiSsm *ssm, FpDevice *dev) {
   case SLEEP_STAGE_DEACTIVATE:
     g_print("Deactivated\n");
     goodix_reset_state(dev);
-    goodix_cancel_receive(dev);
+//    goodix_cancel_receive(dev);
     GError *error = NULL;
     goodix_shutdown_tls(dev, &error);
     goodix55X4_reset_state(FPI_DEVICE_GOODIXTLS55X4(img_dev));
@@ -832,7 +832,7 @@ static void dev_change_state(FpImageDevice *img_dev,
 
 static void dev_deactivate(FpImageDevice *img_dev) {
   FpDevice *dev = FP_DEVICE(img_dev);
-  fpi_device_add_timeout(dev, 500, sleep_start, NULL, NULL);
+  fpi_device_add_timeout(dev, 250, sleep_start, NULL, NULL);
 }
 
 // ---- DEV SECTION END ----

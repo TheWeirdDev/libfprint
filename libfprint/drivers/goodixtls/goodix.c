@@ -1053,6 +1053,7 @@ goodix_send_reset (FpDevice *dev, gboolean reset_sensor, guint8 sleep_time,
 
   GoodixReset payload = {.soft_reset_mcu = FALSE,
                          .reset_sensor = reset_sensor ? TRUE : FALSE,
+                         .other = 1,
                          .sleep_time = sleep_time};
   GoodixCallbackInfo *cb_info;
 
