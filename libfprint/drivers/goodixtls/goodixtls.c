@@ -92,9 +92,13 @@ static void tls_server_config_ctx(SSL_CTX* ctx)
 {
     SSL_CTX_set_ecdh_auto(ctx, 1);
     SSL_CTX_set_dh_auto(ctx, 1);
-    SSL_CTX_set_cipher_list(ctx, "ALL");
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+    /* "ALL" excludes PSK cipher suites, and modern OpenSSL's default security
+     * level rejects the PSK ciphers this sensor uses, so SSL_accept fails with
+     * "cipher operation failed". Explicitly enable PSK at SECLEVEL=0 for this
+     * local sensor channel only. */
+    SSL_CTX_set_cipher_list(ctx, "PSK:@SECLEVEL=0");
     SSL_CTX_set_psk_server_callback(ctx, tls_server_psk_server_callback);
 }
 
@@ -121,7 +125,7 @@ static void tls_config_ssl(SSL* ssl)
     SSL_set_min_proto_version(ssl, TLS1_2_VERSION);
     SSL_set_max_proto_version(ssl, TLS1_2_VERSION);
     SSL_set_psk_server_callback(ssl, tls_server_psk_server_callback);
-    SSL_set_cipher_list(ssl, "ALL");
+    SSL_set_cipher_list(ssl, "PSK:@SECLEVEL=0");
 }
 
 
