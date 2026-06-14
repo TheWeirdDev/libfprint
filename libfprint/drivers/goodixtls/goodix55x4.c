@@ -81,6 +81,7 @@ enum activate_states {
   ACTIVATE_NOP,
   ACTIVATE_CHECK_FW_VER,
   ACTIVATE_CHECK_PSK,
+  ACTIVATE_WRITE_PSK,
   ACTIVATE_RESET,
   ACTIVATE_SET_MCU_IDLE,
   ACTIVATE_SET_MCU_CONFIG,
@@ -177,13 +178,33 @@ static void check_preset_psk_read(FpDevice *dev, gboolean success,
     return;
   }
 
-  if (memcmp(psk, goodix_55x4_psk_0, sizeof(goodix_55x4_psk_0))) {
-    g_set_error(&error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "Invalid device PSK: 0x%s", psk_str);
-    fpi_ssm_mark_failed(user_data, error);
+  if (memcmp(psk, goodix_55x4_psk_0, sizeof(goodix_55x4_psk_0)) == 0) {
+    /* Device already provisioned with the expected PMK hash; skip the write. */
+    fpi_ssm_jump_to_state(user_data, ACTIVATE_RESET);
     return;
   }
 
+  /* Device was provisioned with a different PSK (e.g. by Windows). Fall through
+   * to ACTIVATE_WRITE_PSK to (re)provision it with the known white-box PSK so
+   * the all-zeros TLS-PSK handshake will succeed. */
+  fp_warn("Device PSK 0x%s does not match expected; will write known PSK to "
+          "(re)provision the sensor", psk_str);
+  fpi_ssm_next_state(user_data);
+}
+
+static void check_psk_write(FpDevice *dev, gboolean success, gpointer user_data,
+                            GError *error) {
+  if (error) {
+    fpi_ssm_mark_failed(user_data, error);
+    return;
+  }
+  if (!success) {
+    g_set_error(&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                "Failed to write PSK to device");
+    fpi_ssm_mark_failed(user_data, error);
+    return;
+  }
+  fp_info("Device PSK (re)provisioned successfully");
   fpi_ssm_next_state(user_data);
 }
 static void check_idle(FpDevice *dev, gpointer user_data, GError *err) {
@@ -278,6 +299,14 @@ static void activate_run_state(FpiSsm *ssm, FpDevice *dev) {
     g_print("Checking PSK\n");
     goodix_send_preset_psk_read(dev, GOODIX_55X4_PSK_FLAGS, 32,
                                 check_preset_psk_read, ssm);
+    break;
+
+  case ACTIVATE_WRITE_PSK:
+    g_print("Writing PSK\n");
+    goodix_send_preset_psk_write(dev, GOODIX_55X4_PSK_WRITE_FLAGS,
+                                 goodix_55x4_psk_white_box,
+                                 sizeof(goodix_55x4_psk_white_box), NULL,
+                                 check_psk_write, ssm);
     break;
 
   case ACTIVATE_RESET:
