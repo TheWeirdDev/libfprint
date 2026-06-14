@@ -25,6 +25,9 @@
 #define GOODIX_55X4_EP_OUT (0x1 | FPI_USB_ENDPOINT_OUT)
 
 #define GOODIX_55X4_FIRMWARE_VERSION ("GF3268_RTSEC_APP_10041")
+/* Accept any firmware in the GF3268_RTSEC_APP family (e.g. _10041, _10056)
+ * rather than a single exact revision. */
+#define GOODIX_55X4_FIRMWARE_PREFIX ("GF3268_RTSEC_APP_")
 
 #define GOODIX_55X4_PSK_FLAGS (0xbb020007)
 
