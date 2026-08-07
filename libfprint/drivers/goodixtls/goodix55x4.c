@@ -53,6 +53,29 @@
   (GOODIX55X4_HEIGHT * GOODIX55X4_SCAN_WIDTH) / 4 * 6
 #define GOODIX55X4_CAP_FRAMES 1 // Number of frames we capture per swipe
 
+// The MCU's FDT down reply doesn't actually block until a real touch on
+// this firmware - it's an instantaneous check regardless of the
+// configured threshold. Touch detection is done here instead, by
+// polling captured frames and diffing them against the calibration
+// background (empty_img) until real content appears.
+#define GOODIX55X4_FINGER_DETECT_MAX_ATTEMPTS 100
+#define GOODIX55X4_FINGER_DETECT_POLL_DELAY_MS 100
+// Average per-pixel absolute difference (12-bit pixels, 0-4095) needed
+// to call a frame a real touch. On this unit background noise sits at
+// 4-16, a light graze around 145 (too partial to match reliably) and a
+// firm press at 300-780, so only firm presses are accepted.
+#define GOODIX55X4_FINGER_DETECT_DIFF_THRESHOLD 250
+// The FDT-up event is equally unreliable on this firmware, so finger
+// release is also detected host-side. Lower than the touch threshold to
+// get hysteresis; must still be above the lingering-graze level (~145).
+#define GOODIX55X4_FINGER_UP_DIFF_THRESHOLD 100
+// Consecutive above-threshold frames required to accept a capture.
+// Keep at 1: quick taps (the normal unlock gesture) only stay above
+// threshold for a single frame, and the 250 threshold already filters
+// grazes (~145-190) on its own.
+#define GOODIX55X4_FINGER_DETECT_CONFIRM_FRAMES 1
+#define GOODIX55X4_FINGER_DETECT_CONFIRM_DELAY_MS 60
+
 typedef unsigned short Goodix55X4Pix;
 
 struct _FpiDeviceGoodixTls55X4 {
@@ -61,6 +84,10 @@ struct _FpiDeviceGoodixTls55X4 {
   guint8 *otp;
 
   GSList *frames;
+  guint poll_attempts;
+  guint confirm_frames;
+  GSource *poll_source;
+  gboolean stopping;
 
   Goodix55X4Pix empty_img[GOODIX55X4_FRAME_SIZE];
 };
@@ -480,6 +507,16 @@ postprocess_frame(Goodix55X4Pix frame[GOODIX55X4_FRAME_SIZE],
   return sum != 0;
 }
 
+static double
+frame_diff_score(Goodix55X4Pix frame[GOODIX55X4_FRAME_SIZE],
+                 Goodix55X4Pix background[GOODIX55X4_FRAME_SIZE]) {
+  guint64 sum = 0;
+  for (int i = 0; i != GOODIX55X4_FRAME_SIZE; ++i) {
+    sum += ABS((int)frame[i] - (int)background[i]);
+  }
+  return (double)sum / GOODIX55X4_FRAME_SIZE;
+}
+
 typedef struct _frame_processing_info {
   FpiDeviceGoodixTls55X4 *dev;
   GSList **frames;
@@ -502,6 +539,56 @@ static void save_frame(FpiDeviceGoodixTls55X4 *self, guint8 *raw) {
   self->frames = g_slist_append(self->frames, frame);
 }
 
+static void retry_finger_poll(FpDevice *dev, gpointer user_data) {
+  FpiDeviceGoodixTls55X4 *self = FPI_DEVICE_GOODIXTLS55X4(dev);
+  FpiSsm *ssm = user_data;
+  self->poll_source = NULL;
+  if (self->stopping)
+    return;
+  fpi_ssm_jump_to_state(ssm, SCAN_STAGE_SWITCH_TO_FDT_MODE);
+}
+
+static void retry_finger_up_poll(FpDevice *dev, gpointer user_data) {
+  FpiDeviceGoodixTls55X4 *self = FPI_DEVICE_GOODIXTLS55X4(dev);
+  FpiSsm *ssm = user_data;
+  self->poll_source = NULL;
+  if (self->stopping)
+    return;
+  fpi_ssm_jump_to_state(ssm, SCAN_STAGE_SWITCH_TO_FDT_UP);
+}
+
+static void scan_on_read_img_up(FpDevice *dev, guint8 *data, guint16 len,
+                                gpointer ssm, GError *err) {
+  if (err) {
+    fpi_ssm_mark_failed(ssm, err);
+    return;
+  }
+
+  FpiDeviceGoodixTls55X4 *self = FPI_DEVICE_GOODIXTLS55X4(dev);
+  if (self->stopping)
+    return;
+
+  Goodix55X4Pix candidate[GOODIX55X4_FRAME_SIZE];
+  decode_frame(candidate, data);
+
+  double diff = frame_diff_score(candidate, self->empty_img);
+  g_print("Finger-up poll: diff vs background = %.1f\n", diff);
+
+  if (diff >= GOODIX55X4_FINGER_UP_DIFF_THRESHOLD) {
+    // Finger still on the sensor; poll again. If it never leaves, fall
+    // through to DONE anyway so the state machine can't wedge.
+    if (++self->poll_attempts < GOODIX55X4_FINGER_DETECT_MAX_ATTEMPTS) {
+      self->poll_source =
+          fpi_device_add_timeout(dev, GOODIX55X4_FINGER_DETECT_POLL_DELAY_MS,
+                                 retry_finger_up_poll, ssm, NULL);
+      return;
+    }
+  }
+
+  self->poll_attempts = 0;
+  fpi_ssm_jump_to_state(ssm, SCAN_STAGE_SWITCH_TO_FDT_DONE);
+}
+
 static void scan_on_read_img(FpDevice *dev, guint8 *data, guint16 len,
                              gpointer ssm, GError *err) {
   g_print("SCAN_ON_READ_IMG\n");
@@ -511,6 +598,42 @@ static void scan_on_read_img(FpDevice *dev, guint8 *data, guint16 len,
   }
 
   FpiDeviceGoodixTls55X4 *self = FPI_DEVICE_GOODIXTLS55X4(dev);
+  if (self->stopping)
+    return;
+
+  Goodix55X4Pix candidate[GOODIX55X4_FRAME_SIZE];
+  decode_frame(candidate, data);
+
+  double diff = frame_diff_score(candidate, self->empty_img);
+  g_print("Finger-detect poll: diff vs background = %.1f\n", diff);
+
+  if (diff < GOODIX55X4_FINGER_DETECT_DIFF_THRESHOLD) {
+    self->confirm_frames = 0;
+    if (++self->poll_attempts >= GOODIX55X4_FINGER_DETECT_MAX_ATTEMPTS) {
+      fpi_ssm_mark_failed(ssm,
+                         fpi_device_retry_new(FP_DEVICE_RETRY_GENERAL));
+      return;
+    }
+
+    self->poll_source =
+        fpi_device_add_timeout(dev, GOODIX55X4_FINGER_DETECT_POLL_DELAY_MS,
+                               retry_finger_poll, ssm, NULL);
+    return;
+  }
+
+  if (++self->confirm_frames < GOODIX55X4_FINGER_DETECT_CONFIRM_FRAMES) {
+    // Finger just landed (or grazed); re-check shortly and only accept
+    // if it is still there.
+    g_print("Finger settle check %u/%u\n", self->confirm_frames,
+            GOODIX55X4_FINGER_DETECT_CONFIRM_FRAMES);
+    self->poll_source =
+        fpi_device_add_timeout(dev, GOODIX55X4_FINGER_DETECT_CONFIRM_DELAY_MS,
+                               retry_finger_poll, ssm, NULL);
+    return;
+  }
+
+  self->poll_attempts = 0;
+  self->confirm_frames = 0;
   save_frame(self, data);
   if (g_slist_length(self->frames) <= GOODIX55X4_CAP_FRAMES) {
     fpi_ssm_jump_to_state(ssm, SCAN_STAGE_SWITCH_TO_FDT_MODE);
@@ -707,10 +830,10 @@ static void scan_run_state(FpiSsm *ssm, FpDevice *dev) {
         sizeof(fdt_switch_state_up_55X4), NULL, check_none_cmd, ssm);
     break;
   case SCAN_STAGE_SWITCH_TO_FDT_UP:
-    g_print("SWITCH TO FDT UP\n");
-    goodix_send_mcu_switch_to_fdt_up(dev, (guint8 *)fdt_switch_state_up_55X4,
-                                     sizeof(fdt_switch_state_up_55X4), NULL,
-                                     check_none_cmd, ssm);
+    // The FDT-up event never fires on some units, so detect finger
+    // release host-side, same as finger-down detection.
+    g_print("WAIT FINGER UP (host-side poll)\n");
+    goodix_tls_read_image(dev, scan_on_read_img_up, ssm);
     break;
   case SCAN_STAGE_SWITCH_TO_FDT_DONE:
     fpi_image_device_report_finger_status(img_dev, FALSE);
@@ -772,6 +895,9 @@ static void sleep_complete(FpiSsm *ssm, FpDevice *dev, GError *error) {
 }
 
 static void scan_start(FpiDeviceGoodixTls55X4 *dev) {
+  dev->poll_attempts = 0;
+  dev->confirm_frames = 0;
+  dev->stopping = FALSE;
   fpi_ssm_start(fpi_ssm_new(FP_DEVICE(dev), scan_run_state, SCAN_STAGE_NUM),
                 scan_complete);
 }
@@ -832,6 +958,17 @@ static void dev_change_state(FpImageDevice *img_dev,
 
 static void dev_deactivate(FpImageDevice *img_dev) {
   FpDevice *dev = FP_DEVICE(img_dev);
+  FpiDeviceGoodixTls55X4 *self = FPI_DEVICE_GOODIXTLS55X4(dev);
+
+  // Stop the host-side finger polling before sleeping the device, or a
+  // pending poll fires mid/post-deactivation and wedges the command
+  // pipeline ("A command is already running").
+  self->stopping = TRUE;
+  if (self->poll_source) {
+    g_source_destroy(self->poll_source);
+    self->poll_source = NULL;
+  }
+
   fpi_device_add_timeout(dev, 250, sleep_start, NULL, NULL);
 }
 
