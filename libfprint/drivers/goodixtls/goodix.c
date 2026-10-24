@@ -1209,15 +1209,19 @@ goodix_send_preset_psk_write (FpDevice *dev, guint32 flags, guint8 *psk,
                               GoodixSuccessCallback callback,
                               gpointer user_data)
 {
-  // Only support one flags, one payload and one length
-
-  guint8 *payload = g_malloc (sizeof (GoodixPresetPsk) + length);
-  GoodixPresetPsk *preset_psk = (GoodixPresetPsk *) payload;
+  // Only support one flags, one payload and one length.
+  // Wire format: flags (u32 LE) + length (u32 LE) + psk.
+  // NOTE: the previous implementation used the 12-byte GoodixPresetPsk struct,
+  // leaving the offset field uninitialised (garbage on the wire), and computed
+  // the length with sizeof(payload) (pointer size, 8) instead of the real
+  // buffer size, truncating the written key. Both corrupted the PSK write.
+  guint32 header[2] = {GUINT32_TO_LE (flags), GUINT32_TO_LE (length)};
+  guint16 payload_len = sizeof (header) + length;
+  guint8 *payload = g_malloc (payload_len);
   GoodixCallbackInfo *cb_info;
 
-  preset_psk->flags = GUINT32_TO_LE (flags);
-  preset_psk->length = GUINT32_TO_LE (length);
-  memcpy (payload + sizeof (GoodixPresetPsk), psk, length);
+  memcpy (payload, header, sizeof (header));
+  memcpy (payload + sizeof (header), psk, length);
   if (free_func)
     free_func (psk);
 
@@ -1229,13 +1233,13 @@ goodix_send_preset_psk_write (FpDevice *dev, guint32 flags, guint8 *psk,
       cb_info->user_data = user_data;
 
       goodix_send_protocol (dev, GOODIX_CMD_PRESET_PSK_WRITE, payload,
-                            sizeof (payload) + length, g_free, TRUE, GOODIX_TIMEOUT,
+                            payload_len, g_free, TRUE, GOODIX_TIMEOUT,
                             TRUE, goodix_receive_preset_psk_write, cb_info);
       return;
     }
 
   goodix_send_protocol (dev, GOODIX_CMD_PRESET_PSK_WRITE, payload,
-                        sizeof (payload) + length, g_free, TRUE, GOODIX_TIMEOUT,
+                        payload_len, g_free, TRUE, GOODIX_TIMEOUT,
                         TRUE, NULL, NULL);
 }
 
